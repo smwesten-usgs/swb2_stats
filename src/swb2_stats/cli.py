@@ -1,31 +1,40 @@
+# src/swb2_stats/cli.py
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import xarray as xr
-import numpy as np
 
 from .create_summary_dataset import create_summary_dataset
 from .export_functions import (
     export_xarray_dataset_as_netcdf,
     export_xarray_dataset_as_series_of_tif_images,
 )
-
-OPEN_WATER_LANDUSE_CODE = 111
-
+from .utility_functions import (
+    extract_run_information_from_filename,
+    make_mask_ds,
+)
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for swb2_stats CLI."""
     p = argparse.ArgumentParser(
         prog="swb2_stats",
         description="Summarize SWB2 outputs and export results (netCDF / GeoTIFF) or compute zonal statistics.",
     )
     p.add_argument(
         "--landuse_tif_filename",
-        help="Path to a Cropland Data Layer (CDL) GeoTIFF used to mask open water / NaN.",
+        help="Path to a land-use GeoTIFF used to build a mask (e.g., CDL). If omitted, no mask is applied.",
+    )
+    p.add_argument(
+        "--open-water-code",
+        type=int,
+        default=None,
+        help=(
+            "Integer land-use class code representing open water in the raster. "
+            "If omitted (default), only nodata/NaN pixels are considered non-land. "
+            "If provided, both that code and NaNs are treated as non-land."
+        ),
     )
     p.add_argument(
         "--swb_output_filename",
@@ -35,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output_dir",
         default=".",
-        help="Directory in which export files (TIF/netCDF) should be written (default: current dir).",
+        help="Directory where exports (GeoTIFF/netCDF) are written (default: current directory).",
     )
     p.add_argument(
         "--summary_type",
@@ -54,58 +63,6 @@ def parse_args() -> argparse.Namespace:
         help="Also write the summarized dataset to netCDF.",
     )
     return p.parse_args()
-
-
-def extract_run_information_from_filename(nc_filename: str | Path) -> Tuple[str, str, str, str, str, str, str, str]:
-    """Extract scenario, model, period, variable, and spatial coverage from filename.
-
-    Expected pattern (double underscores between parts):
-    scenario__weather_model__short_period__variable__time_period__spatial_coverage.nc
-    e.g.,
-    ssp245__bcc_csm2-mr__2040-2059__runoff__2040-01-01_to_2059-12-31__688_by_620.nc
-    """
-    nc_filename = Path(nc_filename).name
-    (
-        scenario_name,
-        weather_data_name,
-        short_time_period,
-        swb_variable_name,
-        time_period,
-        spatial_coverage,
-    ) = nc_filename.split("__")
-
-    start_date = time_period.split("_")[0]
-    end_date = time_period.split("_")[2]
-    spatial_coverage = spatial_coverage.split(".")[0]
-    return (
-        scenario_name,
-        weather_data_name,
-        short_time_period,
-        swb_variable_name,
-        time_period,
-        start_date,
-        end_date,
-        spatial_coverage,
-    )
-
-
-def make_mask_ds(landuse_filename: str | Path) -> xr.Dataset:
-    """Read a CDL GeoTIFF and produce a boolean mask Dataset (True=land, False=open water/Nan)."""
-    mask_ds = xr.open_dataset(landuse_filename)
-    mask_ds["band_data2"] = mask_ds["band_data"].sel(band=1).drop_vars("band")
-    mask_ds.drop_dims("band")
-    mask_ds["maskval"] = xr.where(
-        np.logical_or(mask_ds.band_data2 == OPEN_WATER_LANDUSE_CODE, mask_ds.band_data2.isnull()), False, True
-    )
-    return mask_ds
-
-
-def _choose_variable_operation(swb_variable_name: str) -> str:
-    """Return 'mean' for variables that are not naturally summed; 'sum' otherwise."""
-    if swb_variable_name in {"tmin", "tmax", "soil_storage", "tmax_minus_tmin"}:
-        return "mean"
-    return "sum"
-
 
 def main() -> None:
     args = parse_args()
@@ -127,9 +84,15 @@ def main() -> None:
     ) = extract_run_information_from_filename(nc_filename=nc_filename)
 
     summary_basetype = args.summary_type
-    mask_ds = make_mask_ds(args.landuse_tif_filename) if args.landuse_tif_filename else None
 
-    variable_operation = _choose_variable_operation(swb_variable_name)
+    # Build mask if a landuse raster is provided
+    mask_ds = (
+        make_mask_ds(args.landuse_tif_filename, open_water_code=args.open_water_code)
+        if args.landuse_tif_filename
+        else None
+    )
+
+    variable_operation = "mean" if swb_variable_name in {"tmin", "tmax", "soil_storage", "tmax_minus_tmin"} else "sum"
     summary_type = f"{summary_basetype}_{variable_operation}"
 
     ds = create_summary_dataset(
@@ -150,7 +113,6 @@ def main() -> None:
         )
         export_xarray_dataset_as_netcdf(ds, output_grid_name)
 
-    # Always write TIFs (preserving previous behavior); we can parameterize later.
     export_xarray_dataset_as_series_of_tif_images(
         ds,
         summary_basetype=summary_basetype,
