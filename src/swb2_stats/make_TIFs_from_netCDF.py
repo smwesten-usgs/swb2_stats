@@ -1,3 +1,11 @@
+
+"""
+Deprecated: CLI functionality has moved to swb2_stats.cli.
+This module will be removed in a future release.
+"""
+from __future__ import annotations
+from typing import Tuple
+
 import xarray as xr
 import rioxarray
 import numpy as np
@@ -8,12 +16,12 @@ import argparse
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-from utility_functions import (camel_to_underscore,
+from .utility_functions import (camel_to_underscore,
                                underscore_to_camel,
                                underscore_to_kebab,
                                pause)
-from create_summary_dataset import create_summary_dataset
-from export_functions import (export_xarray_dataset_as_netcdf,
+from .create_summary_dataset import create_summary_dataset
+from .export_functions import (export_xarray_dataset_as_netcdf,
                               export_xarray_dataset_as_series_of_tif_images)
 
 mn_seasons = {'12': 'seasonal-DJF', '03': 'seasonal-MAM', '06': 'seasonal-JJA', '09': 'seasonal-SON'}
@@ -24,7 +32,7 @@ month_name = {'01': 'january', '02': 'february', '03': 'march', '04': 'april',
 NODATA_VALUE = -3.4028234663852886e+38 
 OPEN_WATER_LANDUSE_CODE = 111
 
-def make_mask_ds(landuse_filename):
+def make_mask_ds(landuse_filename: str | Path) -> xr.Dataset:
     """
     Read in a cropland data layer TIF and return a xarray dataset mask.
 
@@ -77,7 +85,11 @@ def parse_args() -> argparse.Namespace:
 
     return p.parse_args()
 
-def extract_run_information_from_filename(nc_filename):
+
+def extract_run_information_from_filename(
+    nc_filename: str | Path,
+) -> Tuple[str, str, str, str, str, str, str, str]:
+
     """
     This function will fail unless naming conventions are strictly followed. The swb output files are assumed
     to be named as follows:
@@ -104,7 +116,7 @@ def extract_run_information_from_filename(nc_filename):
     return (scenario_name, weather_data_name, short_time_period, swb_variable_name, time_period,
             start_date, end_date, spatial_coverage)
 
-def main() -> None:
+def main() -> xr.Dataset
     args = parse_args()
        # Determine output directory
     if args.output_dir:

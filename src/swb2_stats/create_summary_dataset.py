@@ -1,3 +1,19 @@
+
+"""Create summarized xarray Datasets from SWB2 daily outputs.
+
+This module provides the `create_summary_dataset` function, which reads a daily
+SWB2 netCDF file and produces summarized (monthly, seasonal, annual, or growing‑season)
+xarray Datasets. Summaries can be computed as either sums or means and optionally
+masked using a land/water mask.
+
+The resulting Dataset preserves 2‑D `lat`/`lon` coordinates and attaches helpful
+metadata attributes (scenario, time period, variable name, units, etc.) that
+downstream exports (GeoTIFF / netCDF) and analyses can reuse.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
 import xarray as xr
 #import rioxarray as rio
 #import xrspatial as xrs
@@ -5,18 +21,97 @@ import numpy as np
 import pandas as pd
 import datetime as dt
 import gc
+from pathlib import Path
 
 NODATA_VALUE = -3.4028234663852886e+38 
 OPEN_WATER_LANDUSE_CODE = 111
 
-def create_summary_dataset(netcdf_filename,
-                           scenario_name,
-                           swb_variable_name, 
-                           weather_data_name, 
-                           short_time_period,
-                           summary_basetype='none',
-                           variable_operation='none',
-                           mask_ds=None):
+def create_summary_dataset(
+    netcdf_filename: str | Path,
+    scenario_name: str,
+    swb_variable_name: str,
+    weather_data_name: str,
+    short_time_period: str,
+    summary_basetype: str = "none",
+    variable_operation: str = "none",
+    mask_ds: Optional[xr.Dataset] = None,
+) -> xr.Dataset:
+    """Create an xarray Dataset of summarized SWB2 outputs.
+
+    Reads a daily SWB2 netCDF file and produces summary grids along a specified
+    temporal basis (monthly/seasonal/annual/growing-season) aggregated by either
+    ``sum`` or ``mean``. If a mask Dataset is provided (with a boolean variable
+    like ``maskval``), the function applies the mask and replaces NaNs with
+    a sentinel NoData value compatible with GeoTIFF output.
+
+    Args:
+        netcdf_filename: Path to the SWB2 daily netCDF file.
+        scenario_name: Scenario identifier (e.g., ``"ssp245"``).
+        swb_variable_name: Variable name inside the netCDF to summarize (e.g., ``"runoff"``).
+        weather_data_name: Weather driver/model name (e.g., ``"bcc_csm2-mr"``).
+        short_time_period: Short time period label used for metadata
+            (e.g., ``"2040-2059"``).
+        summary_basetype: Temporal basis for summarization. Supported values include:
+            - ``"monthly"``, ``"mean_monthly"``
+            - ``"seasonal"``, ``"mean_seasonal"``
+            - ``"annual"``, ``"mean_annual"``
+            - ``"growing-season"``, ``"mean_growing-season"``
+            Defaults to ``"none"`` (will raise in body if unsupported).
+        variable_operation: Aggregation across the temporal basis: ``"sum"`` or ``"mean"``.
+            Defaults to ``"none"`` (will raise in body if unsupported).
+        mask_ds: Optional mask dataset containing a boolean variable (e.g., ``maskval``)
+            where ``True`` indicates valid land pixels. If provided, NaNs are replaced
+            with :data:`NODATA_VALUE` in the summarized variable to ease export.
+
+    Returns:
+        An xarray :class:`~xarray.Dataset` containing:
+        - the summarized variable (same name as ``swb_variable_name``),
+        - 2-D ``lat`` and ``lon`` coordinates (shape ``(y, x)``),
+        - attributes describing the data lineage:
+          ``swb_variable_name``, ``summary_basetype``, ``variable_operation``,
+          ``weather_data_name``, ``scenario_name``, ``time_period``, ``units``,
+          and ``original_source_filename``.
+
+    Notes:
+        - Monthly summaries use frequency ``"ME"`` (month-end).
+        - Seasonal summaries use frequency ``"QS-DEC"`` (quarters starting December)
+          so that DJF, MAM, JJA, SON align with common climatological seasons.
+        - Annual summaries use frequency ``"YE"`` (year-end).
+        - For masked outputs, NaN values are replaced with :data:`NODATA_VALUE` to
+          accommodate GeoTIFF writers that require numerical nodata.
+
+    Examples:
+        Compute mean annual **sum** of a variable and return a single grid (mean of yearly sums):
+
+        >>> ds = create_summary_dataset(
+        ...     netcdf_filename="runoff_daily.nc",
+        ...     scenario_name="ssp245",
+        ...     swb_variable_name="runoff",
+        ...     weather_data_name="bcc_csm2-mr",
+        ...     short_time_period="2040-2059",
+        ...     summary_basetype="mean_annual",
+        ...     variable_operation="sum",
+        ...     mask_ds=None,
+        ... )
+        >>> ds["runoff"]  # doctest: +ELLIPSIS
+        <xarray.DataArray (y: ..., x: ...)>
+        ...
+
+        Compute seasonal **mean** (per season) and then the mean across seasons
+        to obtain four grids (DJF, MAM, JJA, SON):
+
+        >>> ds = create_summary_dataset(
+        ...     netcdf_filename="runoff_daily.nc",
+        ...     scenario_name="ssp245",
+        ...     swb_variable_name="runoff",
+        ...     weather_data_name="bcc_csm2-mr",
+        ...     short_time_period="2040-2059",
+        ...     summary_basetype="mean_seasonal",
+        ...     variable_operation="mean",
+        ... )
+        >>> sorted(ds.dims)
+        ['month', 'x', 'y']
+    """
 
     xarray_dataset = xr.open_dataset(netcdf_filename, 
                                      decode_coords=True, 
